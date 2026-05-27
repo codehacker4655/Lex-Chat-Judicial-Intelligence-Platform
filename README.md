@@ -43,15 +43,18 @@ The platform processes unstructured legal documents through an isolated, product
 
 ---
 
+---
+
 ## 3. Technical Stack
 
-| Component Tier | Technologies & Frameworks Utilized |
-| :--- | :--- |
-| **Core LLM Backend** | DeepSeek-R1 (Accessed via secure HuggingFace Hub Endpoint Inference) |
-| **RAG Framework Architecture** | LangChain Orchestration Suite (`core`, `huggingface`, `community`) |
-| **Vector Storage Engine** | FAISS (Facebook AI Similarity Search) - Optimized with strict `IndexFlatL2` |
-| **Semantic Embedding Model** | `sentence-transformers/all-mpnet-base-v2` (768-Dimension Dense Vectors) |
-| **Data Engineering Pipelines** | PyMuPDF (`fitz`), Python Regular Expressions (`re`), Structured JSON |
+* 🧠 **Core LLM Backend:** DeepSeek-R1 (Accessed via secure HuggingFace Hub Endpoint Inference)
+* ⛓️ **RAG Framework Architecture:** LangChain Orchestration Suite (`core`, `huggingface`, `community`)
+* 📦 **Vector Storage Engine:** FAISS (Facebook AI Similarity Search) - Optimized with strict `IndexFlatL2`
+* 🔢 **Semantic Embedding Model:** `sentence-transformers/all-mpnet-base-v2` (768-Dimension Dense Vectors)
+* 🛠️ **Data Engineering Pipelines:** PyMuPDF (`fitz`), Python Regular Expressions (`re`), Structured JSON
+* 🐳 **DevOps & Containerization:** Docker, Docker Compose Engine, Streamlit UI Architecture
+
+---
 
 
 ---
