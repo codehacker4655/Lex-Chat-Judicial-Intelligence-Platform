@@ -41,6 +41,8 @@ The platform processes unstructured legal documents through an isolated, product
 
 ---
 
+---
+
 ## 3. Technical Stack
 
 | Component Tier | Technologies & Frameworks Utilized |
@@ -50,7 +52,7 @@ The platform processes unstructured legal documents through an isolated, product
 | **Vector Storage Engine** | FAISS (Facebook AI Similarity Search) - Optimized with strict `IndexFlatL2` |
 | **Semantic Embedding Model** | `sentence-transformers/all-mpnet-base-v2` (768-Dimension Dense Vectors) |
 | **Data Engineering Pipelines** | PyMuPDF (`fitz`), Python Regular Expressions (`re`), Structured JSON |
-| **DevOps & Containerization** | Docker, Docker Compose Engine, Streamlit UI Architecture |
+
 
 ---
 
@@ -113,18 +115,4 @@ docker-compose up --build
 
 ```
 Once initialization routines terminate, point any local browser client to: http://localhost:8501
-## 7. Screenshots
-*(Include application screenshots here to demonstrate UI interface layouts and the expansion of the Evaluation & Proof Report block)*
-```
 
----
-
-### 🛠️ How to apply the fix now:
-Save the file, open your terminal, and run these commands to update GitHub:
-```bash
-git add README.md
-git commit -m "Fix markdown spacing constraints for tables and lists"
-git push origin main
-
-```
-Once pushed, refresh your browser page. The raw pipes will transform into a structured table, and your formatting will be clean and professional.
