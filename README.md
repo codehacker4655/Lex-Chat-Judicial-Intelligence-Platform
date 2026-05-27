@@ -111,10 +111,7 @@ The system completely removes loose probabilistic guess-work, executing evaluati
    streamlit run app.py
    
    ```
-### Containerized Production Environment Setup (Docker Compose)
-To initialize the full end-to-end operational platform without configuring local system interpreters or tracking third-party package mismatches, run:
-```bash
-docker-compose up --build
+
 
 ```
 Once initialization routines terminate, point any local browser client to: http://localhost:8501
