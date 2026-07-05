@@ -2,6 +2,7 @@ venv/
 __pycache__/
 .env
 data/*.json
+data/*.db
 faiss_index/
 *.pyc
 .DS_Store

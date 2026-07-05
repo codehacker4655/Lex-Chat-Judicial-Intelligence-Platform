@@ -10,7 +10,6 @@ import os
 # 1. Extract text from PDF
 # ===============================
 def extract_text_from_pdf(pdf_path):
-    # Modified to open via path for VS Code compatibility
     doc = fitz.open(pdf_path)
     text = ""
     for page in doc:
@@ -38,7 +37,6 @@ def extract_case_name(text):
     if match:
         left = match.group(1).strip()
         right = match.group(2).strip()
-        # clean unwanted words
         left = re.sub(r'\b(APPELLANT(S)?|AND ORS\.?)\b', '', left, flags=re.IGNORECASE)
         right = re.sub(r'\b(RESPONDENT(S)?)\b', '', right, flags=re.IGNORECASE)
         left = re.sub(r'\s+', ' ', left)
@@ -83,7 +81,7 @@ def extract_metadata(text):
     judges = "Unknown"
     if judge_match:
         judges = judge_match.group(1).strip()
-        judges = judges.split("202")[0]  # remove noise
+        judges = judges.split("202")[0]  
     case_name = extract_case_name(text)
     case_type = detect_case_type(text)
     return {
@@ -105,11 +103,50 @@ def extract_judgment_text(text):
     return text
 
 # ===============================
-# 7. Process PDFs (VS Code Version)
+# 7. NEW PRODUCT FEATURE: Hierarchical Layout Chunker
+# ===============================
+def slice_into_identifiable_paragraphs(judgment_text):
+    """
+    Programmatically segments continuous judgment text streams into discrete, 
+    numbered paragraph blocks while filtering out legal headers and footer noise.
+    """
+    # Regex designed to capture standard Indian judicial paragraph enumeration formats (e.g., '1. ', '[2] ', '3(a). ')
+    para_split_pattern = r'\n\s*(?:\[?\d+\]?[\.\)]|\b[A-Za-z]\b\.)\s*'
+    
+    raw_chunks = re.split(para_split_pattern, judgment_text)
+    markers = re.findall(para_split_pattern, judgment_text)
+    
+    structured_chunks = []
+    
+    # Catch any preliminary text before the first paragraph index marker
+    if raw_chunks and raw_chunks[0].strip():
+        first_clean = re.sub(r'\s+', ' ', raw_chunks[0]).strip()
+        if len(first_clean) > 30:  # Skip trivial residual fragments
+            structured_chunks.append({
+                "para_id": "PREAMBLE",
+                "text": first_clean
+            })
+            
+    # Zip together extracted text blocks with their exact structural index keys
+    for i, chunk_text in enumerate(raw_chunks[1:]):
+        clean_chunk = re.sub(r'\s+', ' ', chunk_text).strip()
+        if len(clean_chunk) > 40:  # Enforce structural weight bounds
+            # Extract clean alphanumeric paragraph marker strings
+            para_marker = markers[i].strip().replace("[", "").replace("]", "").replace(".", "")
+            structured_chunks.append({
+                "para_id": f"PARA_{para_marker}",
+                "text": clean_chunk
+            })
+            
+    return structured_chunks
+
+# ===============================
+# 8. Process PDFs & Build Relational Database JSON
 # ===============================
 def run_ingestion_pipeline(pdf_folder="data/"):
     dataset = []
-    # Ensure data folder exists
+    flat_chunks_db = [] # Dynamic array to facilitate direct FAISS ingestion downstream
+    
     if not os.path.exists(pdf_folder):
         os.makedirs(pdf_folder)
         print(f"Please put your PDFs in the '{pdf_folder}' folder.")
@@ -126,17 +163,42 @@ def run_ingestion_pipeline(pdf_folder="data/"):
             metadata = extract_metadata(cleaned)
             judgment_text = extract_judgment_text(cleaned)
 
-            data = metadata
-            data["judgment_text"] = judgment_text
-            data["source_file"] = filename
-            dataset.append(data)
+            # Assign properties
+            case_data = metadata.copy()
+            case_data["source_file"] = filename
+            
+            # Apply our hierarchical chunking engine
+            paragraph_blocks = slice_into_identifiable_paragraphs(judgment_text)
+            case_data["paragraphs"] = paragraph_blocks
+            dataset.append(case_data)
+            
+            # Map structural relations globally to build an analytical database trace
+            for block in paragraph_blocks:
+                flat_chunks_db.append({
+                    "text": block["text"],
+                    "metadata": {
+                        "source_file": filename,
+                        "case_name": metadata["case_name"],
+                        "para_id": block["para_id"],
+                        "year": metadata["year"],
+                        "court": metadata["court"]
+                    }
+                })
+                
         except Exception as e:
-            print(f"Error in {filename}: {e}")
+            print(f"Error processing document {filename}: {e}")
 
-    # Save to JSON
+    # Output Layer 1: Hierarchical Case relational view
     with open("data/processed_data.json", "w", encoding="utf-8") as f:
         json.dump(dataset, f, indent=2, ensure_ascii=False)
-    print("\n✅ Done! File saved as data/processed_data.json")
+        
+    # Output Layer 2: Flat relational file configured for direct vector engine consumption
+    with open("data/legal_chunks_ready.json", "w", encoding="utf-8") as f:
+        json.dump(flat_chunks_db, f, indent=2, ensure_ascii=False)
+        
+    print(f"\n✅ Processing complete!")
+    print(f"  --> Case database stored: data/processed_data.json ({len(dataset)} entries)")
+    print(f"  --> Fine-grained chunks mapped: data/legal_chunks_ready.json ({len(flat_chunks_db)} vectors ready)")
 
 if __name__ == "__main__":
     run_ingestion_pipeline()
