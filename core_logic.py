@@ -12,21 +12,23 @@ def get_embeddings():
     # Utilizing all-mpnet-base-v2 for industry-standard semantic legal matching accuracy
     return HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
 
-def build_or_load_vector_db(chunks_file="data/legal_chunks_ready.json", index_path="faiss_index"):
+def build_or_load_vector_db(chunks_data=None, index_path="faiss_index"):
+    """
+    Loads an existing FAISS index from disk, or builds a brand new isolated 
+    vector space dynamically from passed memory data chunks.
+    """
     embeddings = get_embeddings()
     
-    # Check for index footprint; load locally to optimize memory and skip re-indexing
+    # 🔄 DYNAMIC CHECK: If this specific file's index already exists on disk, load it instantly
     if os.path.exists(index_path):
-        print(f"📦 Loading local FAISS index from path: {index_path}...")
+        print(f"📦 Loading existing local FAISS index from path: {index_path}...")
         return FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
 
-    if not os.path.exists(chunks_file):
-        raise FileNotFoundError(f"Missing chunk storage index: {chunks_file}. Execute data preparation script first.")
+    # If the index doesn't exist, we MUST have raw chunks data passed in to build it
+    if chunks_data is None:
+        raise ValueError(f"FAISS index at '{index_path}' not found, and no chunks_data was provided to build it.")
 
-    with open(chunks_file, "r", encoding="utf-8") as f:
-        chunked_data = json.load(f)
-
-    # Aligned with the exact key structure emitted by the ingestion pipeline
+    # Aligned with the exact key structure emitted by the ingestion pipeline matrix
     documents = [
         Document(
             page_content=item["text"],
@@ -42,15 +44,16 @@ def build_or_load_vector_db(chunks_file="data/legal_chunks_ready.json", index_pa
                 "source_file": item["metadata"].get("source_file", "Unknown")
             }
         )
-        for item in chunked_data
+        for item in chunks_data
     ]
 
-    print(f"🚀 Initializing FAISS indexing execution over {len(documents)} document nodes...")
+    print(f"🚀 Initializing isolated FAISS indexing over {len(documents)} document nodes...")
     vectorstore = FAISS.from_documents(documents, embeddings)
+    
+    # Saves to a unique directory matching the file (e.g., 'faiss_index_Union_Of_India')
     vectorstore.save_local(index_path)
-    print(f"💾 FAISS index compiled and saved locally to: {index_path}")
+    print(f"💾 Standalone FAISS index compiled and saved locally to: {index_path}")
     return vectorstore
-
 # ================================
 # 2. HYBRID RETRIEVAL & POST-PROCESSING
 # ================================
@@ -80,7 +83,7 @@ def get_para_val(metadata):
 def hybrid_retrieve(vectorstore, query):
     """
     Executes a high-yield intent-aware hybrid retrieval loop combining MMR document diversity, 
-    chronological parameter re-ranking, and priority heuristic token boosting.
+    chronological parameter re-ranking, and context-adaptive legal token boosting.
     """
     # MMR enforces an informational diversity barrier, avoiding repetitive legal filler phrases
     retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 10, "fetch_k": 30})
@@ -92,20 +95,27 @@ def hybrid_retrieve(vectorstore, query):
     is_outcome_query = any(word in query_lower for word in outcome_keywords)
 
     if is_outcome_query:
-        # Route query dynamically to prioritize conclusion structural text at the end of the judgment
         print("🔍 Outcome intent signature detected: applying final conclusion ranking biases.")
         processed_docs = sorted(retrieved_docs, key=lambda x: get_para_val(x.metadata), reverse=True)
     else:
         processed_docs = retrieved_docs
 
-    # 🛑 Step B: Dynamic Evidence Term Boosting
-    critical_evidence_terms = ["weapon", "training", "sword", "knife", "bomb", "conspiracy", "assault", "murder", "intent"]
+    # 🛑 Step B: Dynamic Domain-Agnostic Legal Boosting
+    # Instead of hardcoding text, we dynamically boost chunks containing specific statutory markers
+    # or high-value legal structural tokens common across ALL case types.
     priority_docs = []
     other_docs = []
 
     for d in processed_docs:
-        content_lower = d.page_content.lower()
-        if any(term in content_lower for term in critical_evidence_terms):
+        content = d.page_content
+        
+        # Heuristic 1: Contains statutory indicators like "Section 43D", "Article 21", "Notification No."
+        has_statute = bool(re.search(r'\b(Section|Article|Notification|Act|Rules|No\.)\b', content, re.IGNORECASE))
+        
+        # Heuristic 2: Contains specific clause indicators like sub-sections or brackets (e.g., "(5)", "43D(5)")
+        has_clause = bool(re.search(r'\b\d+\([a-zA-Z0-9]+\)', content))
+        
+        if has_statute or has_clause:
             priority_docs.append(d)
         else:
             other_docs.append(d)
