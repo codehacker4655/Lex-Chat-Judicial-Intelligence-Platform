@@ -1,6 +1,4 @@
-Here is a complete, production-grade **`README.md`** file tailored specifically for your **Lex-Chat: Judicial Intelligence Platform** repository.
 
-Copy and paste the markdown below into your project's `README.md` file:
 
 ```markdown
 # ⚖️ Lex-Chat: Judicial Intelligence Platform
