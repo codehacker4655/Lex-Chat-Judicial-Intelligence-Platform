@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import numpy as np
+from rank_bm25 import BM25Okapi
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -19,16 +21,14 @@ def build_or_load_vector_db(chunks_data=None, index_path="faiss_index"):
     """
     embeddings = get_embeddings()
     
-    # 🔄 DYNAMIC CHECK: If this specific file's index already exists on disk, load it instantly
+    # 🔄 DYNAMIC CHECK: If this specific file's index already exists on disk, load it
     if os.path.exists(index_path):
         print(f"📦 Loading existing local FAISS index from path: {index_path}...")
         return FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
 
-    # If the index doesn't exist, we MUST have raw chunks data passed in to build it
     if chunks_data is None:
         raise ValueError(f"FAISS index at '{index_path}' not found, and no chunks_data was provided to build it.")
 
-    # Aligned with the exact key structure emitted by the ingestion pipeline matrix
     documents = [
         Document(
             page_content=item["text"],
@@ -49,76 +49,102 @@ def build_or_load_vector_db(chunks_data=None, index_path="faiss_index"):
 
     print(f"🚀 Initializing isolated FAISS indexing over {len(documents)} document nodes...")
     vectorstore = FAISS.from_documents(documents, embeddings)
-    
-    # Saves to a unique directory matching the file (e.g., 'faiss_index_Union_Of_India')
     vectorstore.save_local(index_path)
-    print(f"💾 Standalone FAISS index compiled and saved locally to: {index_path}")
+    print(f"💾 Standalone FAISS index saved to: {index_path}")
     return vectorstore
+
 # ================================
-# 2. HYBRID RETRIEVAL & POST-PROCESSING
+# 2. BM25 INDEX BUILDER & HELPER
 # ================================
-def get_para_val(metadata):
+class LegalBM25Retriever:
     """
-    Extracts numerical tracking metrics from string paragraph tags (e.g., 'PARA_17.10' -> 17.1)
-    to facilitate chronological post-retrieval sorting rules.
+    BM25 Sparse Keyword Searcher designed to run alongside FAISS.
     """
-    try:
-        p_id_str = str(metadata.get("para_id", "0"))
+    def __init__(self, chunks_data):
+        self.chunks_data = chunks_data
+        # Tokenize text while keeping legal clause patterns intact
+        self.corpus = [self._tokenize(item["text"]) for item in chunks_data]
+        self.bm25 = BM25Okapi(self.corpus)
+
+    def _tokenize(self, text):
+        clean_text = re.sub(r'[^\w\s\(\)]', ' ', text.lower())
+        return clean_text.split()
+
+    def search(self, query, top_k=12):
+        tokenized_query = self._tokenize(query)
+        scores = self.bm25.get_scores(tokenized_query)
+        top_indices = np.argsort(scores)[::-1][:top_k]
         
-        # Extract numerical digits or float fractions using regular expressions
-        num_match = re.search(r'\d+(?:\.\d+)*', p_id_str)
-        if not num_match:
-            return 0.0
-            
-        val_str = num_match.group(0)
-        if val_str.count('.') > 1:
-            # Reformat trailing decimal noise out safely (e.g., 17.10.1 -> 17.101)
-            parts = val_str.split('.')
-            val_str = parts[0] + "." + "".join(parts[1:])
-            
-        return float(val_str)
-    except (ValueError, TypeError):
-        return 0.0
+        results = []
+        for idx in top_indices:
+            if scores[idx] > 0:  # Skip non-matching chunks
+                item = self.chunks_data[idx]
+                doc = Document(
+                    page_content=item["text"],
+                    metadata=item["metadata"]
+                )
+                results.append(doc)
+        return results
 
-def hybrid_retrieve(vectorstore, query):
+# ================================
+# 3. RECIPROCAL RANK FUSION (RRF)
+# ================================
+def reciprocal_rank_fusion(dense_docs, sparse_docs, rrf_k=60, top_n=10):
     """
-    Executes a high-yield intent-aware hybrid retrieval loop combining MMR document diversity, 
-    chronological parameter re-ranking, and context-adaptive legal token boosting.
+    Merges dense FAISS results and sparse BM25 results using RRF.
+    Formula: Score = 1 / (60 + Rank)
     """
-    # MMR enforces an informational diversity barrier, avoiding repetitive legal filler phrases
-    retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 10, "fetch_k": 30})
-    retrieved_docs = retriever.invoke(query)
+    rrf_scores = {}
 
-    # 🛑 Step A: Detect Outcome Intent
-    outcome_keywords = ["outcome", "held", "decision", "result", "verdict", "order", "judgment", "ruling", "dismissed", "allowed"]
-    query_lower = query.lower()
-    is_outcome_query = any(word in query_lower for word in outcome_keywords)
+    def add_docs(doc_list, weight=1.0):
+        for rank, doc in enumerate(doc_list, start=1):
+            source = doc.metadata.get('source_file', 'unknown')
+            para = doc.metadata.get('para_id', 'para')
+            # Deduplication Key incorporating file source + para ID
+            para_key = f"{source}_{para}_{doc.page_content[:50]}"
+            
+            if para_key not in rrf_scores:
+                rrf_scores[para_key] = {"doc": doc, "score": 0.0}
+            rrf_scores[para_key]["score"] += weight * (1.0 / (rrf_k + rank))
 
-    if is_outcome_query:
-        print("🔍 Outcome intent signature detected: applying final conclusion ranking biases.")
-        processed_docs = sorted(retrieved_docs, key=lambda x: get_para_val(x.metadata), reverse=True)
+    add_docs(dense_docs, weight=1.0)
+    add_docs(sparse_docs, weight=1.0)
+
+    sorted_docs = sorted(rrf_scores.values(), key=lambda x: x["score"], reverse=True)
+    return [item["doc"] for item in sorted_docs[:top_n]]
+
+# ================================
+# 4. HYBRID RETRIEVAL PIPELINE
+# ================================
+def hybrid_retrieve(vectorstore, query, chunks_data=None, top_n=10, k_dense=12):
+    """
+    Executes True Hybrid Search:
+    1. Dense Retrieval using FAISS (k=k_dense)
+    2. Sparse Retrieval using BM25 (top_k=k_dense if chunks_data available)
+    3. Reciprocal Rank Fusion (RRF) returning top_n documents.
+    """
+
+    # 1. Dense Retrieval (Semantic Search)
+    dense_retriever = vectorstore.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": k_dense}
+    )
+    dense_docs = dense_retriever.invoke(query)
+
+    # 2. Sparse Retrieval (Keyword Search)
+    sparse_docs = []
+    if chunks_data:
+        bm25_searcher = LegalBM25Retriever(chunks_data)
+        sparse_docs = bm25_searcher.search(query, top_k=k_dense)
+
+    # 3. Hybrid Fusion using Reciprocal Rank Fusion (RRF)
+    if sparse_docs:
+        fused_docs = reciprocal_rank_fusion(
+            dense_docs,
+            sparse_docs,
+            top_n=top_n
+        )
     else:
-        processed_docs = retrieved_docs
+        fused_docs = dense_docs[:top_n]
 
-    # 🛑 Step B: Dynamic Domain-Agnostic Legal Boosting
-    # Instead of hardcoding text, we dynamically boost chunks containing specific statutory markers
-    # or high-value legal structural tokens common across ALL case types.
-    priority_docs = []
-    other_docs = []
-
-    for d in processed_docs:
-        content = d.page_content
-        
-        # Heuristic 1: Contains statutory indicators like "Section 43D", "Article 21", "Notification No."
-        has_statute = bool(re.search(r'\b(Section|Article|Notification|Act|Rules|No\.)\b', content, re.IGNORECASE))
-        
-        # Heuristic 2: Contains specific clause indicators like sub-sections or brackets (e.g., "(5)", "43D(5)")
-        has_clause = bool(re.search(r'\b\d+\([a-zA-Z0-9]+\)', content))
-        
-        if has_statute or has_clause:
-            priority_docs.append(d)
-        else:
-            other_docs.append(d)
-
-    # Construct and return the custom context bundle
-    return priority_docs + other_docs
+    return fused_docs

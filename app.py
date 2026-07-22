@@ -1,8 +1,8 @@
 import streamlit as st
+import time
 import os
 import re
 import sqlite3
-import shutil
 import json
 from datetime import datetime
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
@@ -19,12 +19,12 @@ from langchain_core.prompts import PromptTemplate
 from core_logic import build_or_load_vector_db, hybrid_retrieve, get_embeddings
 
 # ==========================================
-# 0. DATABASE DATA FLYWHEEL LOGGER
+# 0. USER INTERACTION & FEEDBACK LOGGING LAYER
 # ==========================================
 DB_FILE = "data/user_feedback_logs.db"
 
 def init_feedback_db():
-    """Initializes a local transactional database to log evaluation metrics."""
+    """Initializes a local transactional database with execution metrics logging."""
     os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -35,6 +35,8 @@ def init_feedback_db():
             query TEXT,
             answer TEXT,
             citations TEXT,
+            retrieval_time REAL DEFAULT 0.0,
+            response_time REAL DEFAULT 0.0,
             feedback_score INTEGER DEFAULT 0,
             error_category TEXT DEFAULT 'None',
             source_file TEXT DEFAULT 'Unknown'
@@ -43,14 +45,16 @@ def init_feedback_db():
     conn.commit()
     conn.close()
 
-def log_interaction(query, answer, citations, source_file):
-    """Inserts a conversation node tracking footprint into the logging layer."""
+def log_interaction(query, answer, citations, source_file, retrieval_time=0.0, response_time=0.0):
+    """Inserts a conversation node tracking footprint with latency metrics into the database."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
-        "INSERT INTO logs (timestamp, query, answer, citations, source_file) VALUES (?, ?, ?, ?, ?)",
-        (timestamp, query, answer, str(citations), source_file)
+        """INSERT INTO logs 
+           (timestamp, query, answer, citations, source_file, retrieval_time, response_time) 
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (timestamp, query, answer, str(citations), source_file, retrieval_time, response_time)
     )
     log_id = cursor.lastrowid
     conn.commit()
@@ -58,7 +62,7 @@ def log_interaction(query, answer, citations, source_file):
     return log_id
 
 def update_log_feedback(log_id, score, category="None"):
-    """Applies active optimization flags directly to historical interaction profiles."""
+    """Applies active feedback flags directly to database records."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute(
@@ -67,20 +71,6 @@ def update_log_feedback(log_id, score, category="None"):
     )
     conn.commit()
     conn.close()
-
-def get_last_interaction_feedback(source_file):
-    """Queries the logging layer for the most recent transaction error flag on the current file."""
-    if not os.path.exists(DB_FILE):
-        return None
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT feedback_score, error_category FROM logs WHERE source_file = ? ORDER BY id DESC LIMIT 1",
-        (source_file,)
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return row
 
 # Initialize logging layer at script instantiation
 init_feedback_db()
@@ -95,6 +85,8 @@ if "uploaded_cases" not in st.session_state:
     st.session_state.uploaded_cases = []
 if "current_active_case" not in st.session_state:
     st.session_state.current_active_case = None
+if "current_chunks_data" not in st.session_state:
+    st.session_state.current_chunks_data = None
 
 with st.sidebar:
     st.header("Authentication & Settings")
@@ -108,7 +100,7 @@ with st.sidebar:
     
     if uploaded_file:
         if uploaded_file.name in st.session_state.uploaded_cases:
-            st.warning(f"⚠️ '{uploaded_file.name}' has already been processed and is active in your library! Go ahead and ask your questions directly.")
+            st.warning(f"⚠️ '{uploaded_file.name}' is already active in your library!")
         else:
             os.makedirs("data", exist_ok=True)
             file_path = os.path.join("data", uploaded_file.name)
@@ -121,7 +113,7 @@ with st.sidebar:
             unique_index_path = f"faiss_index_{safe_file_id}"
             
             if st.button("🚀 Process & Index Case File"):
-                with st.spinner("Executing structural validation, text extraction, and vector compile loops..."):
+                with st.spinner("Processing PDF and building hybrid index..."):
                     from ingestion import run_ingestion_pipeline
                     
                     run_ingestion_pipeline(target_pdf_name=uploaded_file.name)
@@ -130,6 +122,8 @@ with st.sidebar:
                     if os.path.exists(target_chunk_json):
                         with open(target_chunk_json, "r", encoding="utf-8") as f:
                             chunks_data = json.load(f)
+
+                        st.session_state.current_chunks_data = chunks_data
                         
                         new_vs = build_or_load_vector_db(
                             chunks_data=chunks_data,
@@ -144,12 +138,20 @@ with st.sidebar:
                             first_case_id = re.sub(r'[^a-zA-Z0-9]', '_', st.session_state.uploaded_cases[0])
                             master_vectorstore = build_or_load_vector_db(index_path=f"faiss_index_{first_case_id}")
                             
-                            for remaining_case in st.session_state.uploaded_cases[1:]:
+                            merged_chunks = []
+                            for remaining_case in st.session_state.uploaded_cases:
                                 rem_case_id = re.sub(r'[^a-zA-Z0-9]', '_', remaining_case)
-                                next_store = build_or_load_vector_db(index_path=f"faiss_index_{rem_case_id}")
-                                master_vectorstore.merge_from(next_store)
+                                chunk_file = f"data/chunks_{rem_case_id}.json"
+                                if os.path.exists(chunk_file):
+                                    with open(chunk_file, "r", encoding="utf-8") as cf:
+                                        merged_chunks.extend(json.load(cf))
+                                
+                                if remaining_case != st.session_state.uploaded_cases[0]:
+                                    next_store = build_or_load_vector_db(index_path=f"faiss_index_{rem_case_id}")
+                                    master_vectorstore.merge_from(next_store)
                                 
                             st.session_state.vectorstore = master_vectorstore
+                            st.session_state.current_chunks_data = merged_chunks
                         else:
                             st.session_state.vectorstore = new_vs
                             st.session_state.current_active_case = uploaded_file.name
@@ -157,7 +159,7 @@ with st.sidebar:
                         st.toast(f"Case footprint fully compiled: {uploaded_file.name}", icon="✅")
                         st.rerun()
                     else:
-                        st.error("Ingestion failed: Ground truth chunk array structural markers missing.")
+                        st.error("Ingestion failed: Ground truth chunk array missing.")
 
     if st.session_state.uploaded_cases:
         st.divider()
@@ -177,72 +179,128 @@ with st.sidebar:
             st.session_state.current_active_case = selected_case
             
             if selected_case == "✨ Search Across All Loaded Cases":
-                with st.spinner("Merging isolated case indices into a global search matrix..."):
+                with st.spinner("Merging case indices..."):
                     first_case_id = re.sub(r'[^a-zA-Z0-9]', '_', st.session_state.uploaded_cases[0])
                     master_vectorstore = build_or_load_vector_db(index_path=f"faiss_index_{first_case_id}")
                     
-                    for remaining_case in st.session_state.uploaded_cases[1:]:
-                        next_case_id = re.sub(r'[^a-zA-Z0-9]', '_', remaining_case)
-                        next_store = build_or_load_vector_db(index_path=f"faiss_index_{next_case_id}")
-                        master_vectorstore.merge_from(next_store)
+                    merged_chunks = []
+                    for case_file in st.session_state.uploaded_cases:
+                        case_id = re.sub(r'[^a-zA-Z0-9]', '_', case_file)
+                        chunk_file = f"data/chunks_{case_id}.json"
+                        if os.path.exists(chunk_file):
+                            with open(chunk_file, "r", encoding="utf-8") as cf:
+                                merged_chunks.extend(json.load(cf))
+                        
+                        if case_file != st.session_state.uploaded_cases[0]:
+                            next_store = build_or_load_vector_db(index_path=f"faiss_index_{case_id}")
+                            master_vectorstore.merge_from(next_store)
                         
                     st.session_state.vectorstore = master_vectorstore
+                    st.session_state.current_chunks_data = merged_chunks
                     st.toast("Global dynamic search mode activated!", icon="✨")
                     st.rerun()
             else:
                 safe_selected_id = re.sub(r'[^a-zA-Z0-9]', '_', selected_case)
                 target_index_path = f"faiss_index_{safe_selected_id}"
                 st.session_state.vectorstore = build_or_load_vector_db(index_path=target_index_path)
+                
+                chunk_file = f"data/chunks_{safe_selected_id}.json"
+                if os.path.exists(chunk_file):
+                    with open(chunk_file, "r", encoding="utf-8") as cf:
+                        st.session_state.current_chunks_data = json.load(cf)
+                        
                 st.toast(f"Context shifted to: {selected_case}", icon="🔄")
                 st.rerun()
 
     st.divider()
-    admin_key = st.text_input("⚙️ Developer Console Passkey", type="password", help="Enter engineering passkey to audit backend tracking metrics.")
+    admin_key = st.text_input("⚙️ Developer Console Passkey", type="password")
     
     if admin_key == "orion_dev_2026":
         st.subheader("📊 Active Analytics Pipeline")
         if os.path.exists(DB_FILE):
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
-            cursor.execute("SELECT id, timestamp, query, feedback_score, error_category, source_file FROM logs ORDER BY id DESC LIMIT 5")
+            cursor.execute("SELECT id, timestamp, query, retrieval_time, response_time, feedback_score, error_category, source_file FROM logs ORDER BY id DESC LIMIT 5")
             rows = cursor.fetchall()
             conn.close()
             
             if rows:
                 for r in rows:
-                    st.caption(f"**[{r[1]}]** File: `{r[5][:15]}...` | Q: *{r[2][:20]}...* | Score: `{r[3]}` | Tag: `{r[4]}`")
+                    st.caption(f"**[{r[1]}]** File: `{r[7][:12]}...` | R-Time: `{r[3]:.2f}s` | L-Time: `{r[4]:.2f}s` | Score: `{r[5]}`")
             else:
-                st.caption("Database initialized, but no transaction metrics logged yet.")
-        else:
-            st.caption("No log vectors cached yet.")
+                st.caption("No log vectors cached yet.")
 
 # ==========================================
 # 2. PROMPT TEMPLATES
 # ==========================================
 document_prompt = PromptTemplate(
-    input_variables=["page_content", "case_name", "court", "year", "judges", "date", "case_type"],
+    input_variables=[
+        "page_content", 
+        "para_id", 
+        "case_name", 
+        "court", 
+        "year", 
+        "judges", 
+        "date", 
+        "case_type"
+    ],
     template=(
-        "[SOURCE METADATA | CASE: {case_name} | COURT: {court} | YEAR: {year} | JUDGES: {judges} | DATE: {date} | TYPE: {case_type}]\n"
+        "[SOURCE METADATA | PARAGRAPH ID: {para_id} | CASE: {case_name} | COURT: {court} | YEAR: {year} | JUDGES: {judges} | DATE: {date} | TYPE: {case_type}]\n"
         "PARA_TEXT: {page_content}"
     )
 )
+Prof_system_prompt = ("""
+You are an expert Legal AI Assistant specializing in Indian Supreme Court judgments.
 
-prof_system_prompt = (
-    "You are an expert Legal AI Counselor. Use the provided context and metadata to answer.\n"
-    "Structure responses matching legal standards: ISSUES, REASONING (citing explicit Paragraph numbers), and CONCLUSION.\n\n"
-    "CONTEXT:\n{context}"
-)
+CRITICAL REFUSAL DIRECTIVE:
+If the query asks about a statute, legal case, or topic that is NOT explicitly mentioned in the retrieved CONTEXT below , you MUST immediately refuse to answer and output strictly:
+"The retrieved context does not contain sufficient information to answer this question."
 
-simple_system_prompt = (
-    "You are a Legal Awareness Assistant. Use the context and metadata to simplify the case for a common citizen.\n"
-    "Break down technical legal arguments into conversational analogies while maintaining 100% factual accuracy from the Para numbers.\n\n"
-    "CONTEXT:\n{context}"
-)
+RULES:
+• Answer ONLY using the retrieved CONTEXT.
+• Do NOT use outside legal knowledge, assumptions, or prior training.
+• If the answer cannot be found in the retrieved context, clearly state:
+  "The retrieved context does not contain sufficient information to answer this question."
+• Never fabricate facts, legal conclusions, or citations.
+• Every factual statement, legal proposition, observation, or conclusion MUST immediately end with one or more paragraph citations in the format [Para X].
+• Never group citations at the end of a paragraph. Attach each citation directly to the sentence it supports.
+• If multiple retrieved paragraphs support the same statement, cite all relevant paragraphs (e.g., [Para 12, Para 18]).
+• If multiple retrieved paragraphs are relevant, combine them into one coherent answer.
+• Adapt your response format to the user's question. Use a direct answer, explanation, comparison, summary, or bullet points as appropriate.
+• Keep the answer focused on the user's question and avoid unnecessary information.
+
+CONTEXT:
+{context}
+""")
+
+simple_system_prompt = ("""
+You are a Legal Awareness Assistant helping people understand Indian Supreme Court judgments.
+
+CRITICAL REFUSAL DIRECTIVE:
+If the question is about a topic or case not present in the provided CONTEXT, clearly state:
+"The retrieved context does not contain sufficient information to answer this question."
+
+RULES:
+• Answer ONLY using the retrieved CONTEXT.
+• Do NOT guess or add information that is not present in the retrieved context.
+• If the answer is unavailable in the retrieved context, clearly say so.
+• Never invent facts or legal conclusions.
+• Use simple everyday English.
+• Avoid legal jargon whenever possible. If legal terms are necessary, explain them immediately in simple language.
+• Every factual statement must immediately end with paragraph citations in the format [Para X].
+• Never make unsupported statements.
+• If multiple retrieved paragraphs are relevant, combine them into one easy-to-understand explanation.
+• Adapt your response style to the user's question. Direct answers for factual questions, detailed explanations for "why" or "how" questions, and concise summaries when requested.
+• Keep the explanation clear, natural, and focused on answering the user's question.
+
+CONTEXT:
+{context}
+""")
 
 # ==========================================
 # 3. CHAIN INITIALIZATION
 # ==========================================
-def create_legal_chain(hf_token, system_prompt_str, vectorstore):
+def create_legal_chain(hf_token, system_prompt_str):
     os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_token
     
     prompt = ChatPromptTemplate.from_messages([
@@ -259,15 +317,12 @@ def create_legal_chain(hf_token, system_prompt_str, vectorstore):
     )
     llm = ChatHuggingFace(llm=llm_endpoint)
 
-    combine_docs_chain = create_stuff_documents_chain(
+    return create_stuff_documents_chain(
         llm,
         prompt,
         document_variable_name="context",
         document_prompt=document_prompt
     )
-    
-    retriever = vectorstore.as_retriever() 
-    return create_retrieval_chain(retriever, combine_docs_chain)
 
 # ==========================================
 # 4. CHAT INTERFACE & RUNTIME EXECUTION
@@ -314,63 +369,64 @@ if hf_token:
                 st.markdown(user_query)
 
             with st.spinner(f"Querying matching context from {st.session_state.current_active_case}..."):
-                
-                # 🔄 REAL-TIME SELF-HEALING OPTIMIZATION LAYER
-                base_sys_prompt = prof_system_prompt if mode == "Professional" else simple_system_prompt
-                
-                # Check the database for the last user action metric on this case file
-                last_feedback = get_last_interaction_feedback(st.session_state.current_active_case)
-                
-                if last_feedback and last_feedback[0] == -1:
-                    error_type = last_feedback[1]
-                    st.warning(f"🔄 Active Feedback Realignment Engaged: Mitigating previous exception context ('{error_type}')")
-                    
-                    # Inject targeted prompt engineering corrections into the system instructions based on the user's specific complaint
-                    correction_injection = "\n\n⚠️ CRITICAL SYSTEM REALIGNMENT WARNING: The user flagged your immediate previous response as a failure due to standard model constraints. "
-                    
-                    if error_type == "Hallucinated Context":
-                        correction_injection += "You must strictly rely on verbatim information from the provided CONTEXT. Do not extrapolate, infer, or pull outside legal details. If a fact is missing from the provided PARA_TEXT, say so explicitly."
-                    elif error_type == "Missing Citation Reference":
-                        correction_injection += "You must explicitly tie every factual declaration or legal argument back to its designated paragraph number using clear [Para X] anchors. Do not summarize without direct path attribution."
-                    elif error_type == "Format Discrepancy":
-                        if mode == "Professional":
-                            correction_injection += "You must tightly enforce the ISSUES, REASONING, and CONCLUSION layout structure. Do not skip headers or blend these structural sections."
-                        else:
-                            correction_injection += "Ensure your conversational analogies are 100% factually grounded in the provided parameters without over-simplifying the underlying rule of law."
-                    else:
-                        correction_injection += "Thoroughly double-check your logical steps, eliminate assumptions, and strictly map your reasoning constraints to the provided context."
-                    
-                    # Complete the self-healing instruction override
-                    base_sys_prompt += correction_injection
 
-                # Bind the dynamically constructed or corrected system prompt to the legal chain instance
-                chain = create_legal_chain(hf_token, base_sys_prompt, st.session_state.vectorstore)
-                
+                base_sys_prompt = Prof_system_prompt if mode == "Professional" else simple_system_prompt
+
+                chain = create_legal_chain(hf_token, base_sys_prompt)
+
                 chat_bot = RunnableWithMessageHistory(
-                    chain, get_history,
+                    chain, 
+                    get_history,
                     input_messages_key="input",
-                    history_messages_key="chat_history",
-                    output_messages_key="answer"
+                    history_messages_key="chat_history"
                 )
                 
-                docs = hybrid_retrieve(st.session_state.vectorstore, user_query)
+                chunks_data = st.session_state.get("current_chunks_data", None)
                 
-                response = chat_bot.invoke(
+                # 🚀 Search Depth: Set dynamic top_n window based on single vs multi-doc search
+                is_multi_mode = (st.session_state.current_active_case == "✨ Search Across All Loaded Cases")
+                search_depth = 16 if is_multi_mode else 10
+                
+                # ⏱️ Measure Retrieval Latency
+                retrieval_start = time.perf_counter()
+                docs = hybrid_retrieve(
+                    st.session_state.vectorstore, 
+                    user_query, 
+                    chunks_data=chunks_data,
+                    top_n=search_depth,
+                    k_dense=search_depth
+                )
+                retrieval_end = time.perf_counter()
+                retrieval_time = retrieval_end - retrieval_start
+
+                # ⏱️ Measure LLM Response Latency
+                response_start = time.perf_counter()
+                full_answer = chat_bot.invoke(
                     {"input": user_query, "context": docs}, 
                     config={"configurable": {"session_id": st.session_state.current_active_case}}
                 )
+                response_end = time.perf_counter()
+                response_time = response_end - response_start
 
-                full_answer = response["answer"]
                 clean_answer = re.sub(r'<think>.*?</think>', '', full_answer, flags=re.DOTALL).strip()
 
+                # Build Proof Report with explicitly mapped file sources & paragraph IDs
                 proof_str = ""
-                if response["context"]:
-                    unique_paras = list(set([doc.metadata.get('para_id', 'Unknown') for doc in response["context"]]))
-                    case_name = response["context"][0].metadata.get('case_name', 'Unknown')
-                    proof_str = f"**Faithfulness Index:** Grounded in case text loops matching parameters {unique_paras}.\n\n**Source Authority:** '{case_name}' metadata maps."
+                if docs:
+                    doc_sources = set([f"{doc.metadata.get('source_file', 'Unknown')} ({doc.metadata.get('para_id', 'PARA')})" for doc in docs])
+                    source_list_str = ", ".join(list(doc_sources))
+                    proof_str = f"**Faithfulness Index:** Grounded in retrieved nodes: `{source_list_str}`.\n\n**Performance Metrics:** Retrieval: `{retrieval_time:.2f}s` | Generation: `{response_time:.2f}s`"
 
-                log_id = log_interaction(user_query, clean_answer, proof_str, st.session_state.current_active_case)
-
+                # 💾 LOG EVERYTHING (Including performance metrics) TO DATABASE
+                log_id = log_interaction(
+                    query=user_query, 
+                    answer=clean_answer, 
+                    citations=proof_str, 
+                    source_file=st.session_state.current_active_case,
+                    retrieval_time=retrieval_time,
+                    response_time=response_time
+                )
+                
                 with st.chat_message("assistant"):
                     st.markdown(clean_answer)
                     
@@ -383,15 +439,15 @@ if hf_token:
                     with feedback_cols[0]:
                         if st.button("👍", key=f"up_{log_id}"):
                             update_log_feedback(log_id, 1)
-                            st.toast("System alignment metric logged!", icon="✅")
+                            st.toast("Thanks for your feedback!", icon="✅")
                     with feedback_cols[1]:
                         if st.button("👎", key=f"down_{log_id}"):
                             update_log_feedback(log_id, -1, "General Alert")
-                            st.toast("System feedback exception logged.", icon="⚠️")
+                            st.toast("Feedback recorded. This will help us improve!", icon="⚠️")
                             
                     error_choice = st.selectbox(
                         "Report System Divergence:",
-                        ["None", "Hallucinated Context", "Missing Citation Reference", "Format Discrepancy"],
+                        ["None", "Hallucinated Context", "Missing Citation Reference", "Format Discrepancy", "Incorrect Answer", "Incomplete Answer"],
                         key=f"err_{log_id}"
                     )
                     if error_choice != "None":
