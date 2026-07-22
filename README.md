@@ -1,13 +1,4 @@
-
-
-```markdown
 # ⚖️ Lex-Chat: Judicial Intelligence Platform
-
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Framework: Streamlit](https://img.shields.io/badge/Framework-Streamlit-FF4B4B.svg)](https://streamlit.io/)
-[![Orchestration: LangChain](https://img.shields.io/badge/Orchestration-LangChain-1C3C3C.svg)](https://www.langchain.com/)
-[![LLM: DeepSeek--R1](https://img.shields.io/badge/LLM-DeepSeek--R1-4B0082.svg)](https://huggingface.co/deepseek-ai/DeepSeek-R1)
-[![Evaluation: RAGAS](https://img.shields.io/badge/Evaluation-RAGAS-00A86B.svg)](https://github.com/explodinggradients/ragas)
 
 An enterprise-grade, citation-anchored **Retrieval-Augmented Generation (RAG)** platform designed to analyze, summarize, and cross-reference complex legal judgments (such as Supreme Court orders) with strict paragraph-level alignment and zero-hallucination guardrails.
 
@@ -89,13 +80,6 @@ An enterprise-grade, citation-anchored **Retrieval-Augmented Generation (RAG)** 
 │  • SQLite Telemetry & Feedback Logging       │
 └──────────────────────────────────────────────┘
 
-```
-
----
-
-## 📂 Project Directory Structure
-
-```text
 LexChat_Project/
 ├── app.py                     # Main Streamlit web application frontend
 ├── core_logic.py              # RAG pipeline, FAISS+BM25 retriever, and RRF logic
@@ -107,108 +91,3 @@ LexChat_Project/
 ├── .env.example               # Template for environment variables
 └── README.md                  # System documentation
 
-```
-
----
-
-## ⚙️ Installation & Setup
-
-### 1. Clone the Repository
-
-```bash
-git clone [https://github.com/your-username/LexChat_Project.git](https://github.com/your-username/LexChat_Project.git)
-cd LexChat_Project
-
-```
-
-### 2. Create & Activate Virtual Environment
-
-```bash
-# Windows
-python -m venv venv
-venv\Scripts\activate
-
-# Linux / MacOS
-python3 -m venv venv
-source venv/bin/activate
-
-```
-
-### 3. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-
-```
-
----
-
-## 🔑 Environment Configuration
-
-Create a `.env` file in the project root folder based on `.env.example`:
-
-```env
-# HuggingFace Serverless Inference API Token
-HUGGINGFACEHUB_API_TOKEN=hf_your_actual_token_here
-
-# Optional: Google Gemini API Key (if using Gemini as RAGAS Judge)
-GOOGLE_API_KEY=your_gemini_api_key_here
-
-```
-
-> **⚠️ Security Note:** Do not commit your `.env` file containing active API tokens to GitHub. Add `.env` to your `.gitignore`.
-
----
-
-## 🚀 Running the Application
-
-Launch the Streamlit interface locally:
-
-```bash
-streamlit run app.py
-
-```
-
-Open your browser at `http://localhost:8501` to access the interactive platform.
-
----
-
-## 📊 Running RAGAS Evaluation
-
-Execute the evaluation pipeline to compute Faithfulness, Answer Relevancy, Context Precision, and Context Recall:
-
-```bash
-python evaluation_metrics.py
-
-```
-
----
-
-## 📈 Benchmark Results
-
-Evaluated across legal judgment QA sets using RAGAS:
-
-| Metric | Score | Target / Meaning |
-| --- | --- | --- |
-| **Faithfulness** | **1.00** | Zero parametric hallucination; 100% of claims are anchored in retrieved text. |
-| **Answer Relevancy** | **0.89** | Direct, context-focused responses without off-topic drift. |
-| **Context Precision** | **0.80** | High ranking accuracy of relevant paragraph nodes. |
-| **Context Recall** | **0.80** | Strong extraction of foundational facts across multi-page legal documents. |
-
----
-
-## 🛣️ Future Roadmap
-
-* [ ] **Cross-Encoder Reranking:** Integrate `bge-reranker-base` post-RRF fusion to improve context precision for long-context judgment comparative queries.
-* [ ] **Database Migration:** Upgrade telemetry & vector index storage from local SQLite/FAISS to PostgreSQL (`pgvector`) or Qdrant for enterprise multi-tenancy.
-* [ ] **OCR Engine:** Add Tesseract/PaddleOCR support for scanned and non-searchable judicial PDFs.
-
----
-
-## 📜 License
-
-Distributed under the MIT License. See `LICENSE` for more information.
-
-```
-
-```
