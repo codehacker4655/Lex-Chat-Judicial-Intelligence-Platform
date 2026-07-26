@@ -134,7 +134,7 @@ results = evaluate(
     embeddings=evaluator_embeddings
 )
 
-df = results.to_pandas()
+
 
 print("\n=======================================================")
 print("📊 LEX-CHAT FINAL RAGAS BENCHMARK RESULTS")
@@ -148,5 +148,3 @@ print(f"✅ Context Precision (FAISS Quality):        {df['context_precision'].m
 print(f"✅ Context Recall (Completeness):            {df['context_recall'].mean():.2f}")
 print("-------------------------------------------------------\n")
 
-df.to_csv("lex_chat_ragas_final_report.csv", index=False)
-print("📄 Saved full evaluation log to 'lex_chat_ragas_final_report.csv'")
