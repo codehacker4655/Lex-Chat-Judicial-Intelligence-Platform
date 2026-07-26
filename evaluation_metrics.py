@@ -1,6 +1,6 @@
 import os
 import json
-import pandas as pd
+
 from datasets import Dataset
 from ragas import evaluate
 from ragas.metrics import (
